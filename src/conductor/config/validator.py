@@ -1064,8 +1064,12 @@ def _collect_template_strings(
     return templates
 
 
-# Maximum depth for recursive sub-workflow validation to prevent infinite loops.
-_MAX_SUBWORKFLOW_VALIDATION_DEPTH = 10
+# Maximum depth for recursive sub-workflow validation to prevent infinite
+# loops. Public (no leading underscore): also used by `conductor preview`
+# (`cli/preview.py`) to cap its own subworkflow-tree walk at the same depth
+# the validator enforces, so a workflow that validates cleanly can't exceed
+# what preview is willing to expand.
+MAX_SUBWORKFLOW_VALIDATION_DEPTH = 10
 
 
 def _validate_subworkflow_refs(
@@ -1091,7 +1095,7 @@ def _validate_subworkflow_refs(
             for cycle detection. Callers should leave this as ``None``; it is
             threaded through recursive calls.
         _depth: Current recursion depth (internal). When the depth reaches
-            :data:`_MAX_SUBWORKFLOW_VALIDATION_DEPTH`, recursion stops and a
+            :data:`MAX_SUBWORKFLOW_VALIDATION_DEPTH`, recursion stops and a
             warning is emitted so callers know the validation tree was
             truncated.
 
@@ -1104,10 +1108,10 @@ def _validate_subworkflow_refs(
     errors: list[str] = []
     warnings: list[str] = []
 
-    if _depth >= _MAX_SUBWORKFLOW_VALIDATION_DEPTH:
+    if _depth >= MAX_SUBWORKFLOW_VALIDATION_DEPTH:
         warnings.append(
             f"Sub-workflow validation depth limit "
-            f"({_MAX_SUBWORKFLOW_VALIDATION_DEPTH}) reached; "
+            f"({MAX_SUBWORKFLOW_VALIDATION_DEPTH}) reached; "
             "deeper sub-workflows were not validated. "
             "Reduce nesting or check for unintended cycles."
         )
@@ -1128,9 +1132,7 @@ def _validate_subworkflow_refs(
             )
 
     for _agent_name, workflow_ref, label in candidates:
-        sub_path, ref_errors = _resolve_subworkflow_ref_for_validation(
-            workflow_ref, label, base_dir
-        )
+        sub_path, ref_errors = resolve_subworkflow_ref_for_validation(workflow_ref, label, base_dir)
         errors.extend(ref_errors)
         if sub_path is None:
             continue
@@ -1142,7 +1144,7 @@ def _validate_subworkflow_refs(
             stat = sub_path.stat()
             canonical: tuple[int, int] = (stat.st_dev, stat.st_ino)
         except OSError as exc:
-            # Should be rare since _resolve_subworkflow_ref_for_validation
+            # Should be rare since resolve_subworkflow_ref_for_validation
             # already returned a path it considered valid, but stat() can
             # still fail on some platforms (e.g. permission errors).
             errors.append(f"{label}: cannot stat sub-workflow file '{sub_path}': {exc}")
@@ -1180,7 +1182,7 @@ def _validate_subworkflow_refs(
     return errors, warnings
 
 
-def _resolve_subworkflow_ref_for_validation(
+def resolve_subworkflow_ref_for_validation(
     workflow_ref: str,
     label: str,
     base_dir: Path,
@@ -1189,6 +1191,11 @@ def _resolve_subworkflow_ref_for_validation(
 
     Mirrors the engine's ``_resolve_subworkflow_path`` but is synchronous and
     returns errors as a list rather than raising.
+
+    Public (no leading underscore): also used by ``conductor preview``
+    (``cli/preview.py``) to resolve subworkflow references for its own
+    non-executing DAG-expansion pass, so this is an intentional shared
+    contract, not just an internal validator detail.
 
     Args:
         workflow_ref: The raw ``workflow:`` field value.

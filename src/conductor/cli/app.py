@@ -725,6 +725,58 @@ def show(
 
 
 @app.command()
+def preview(
+    workflow: Annotated[
+        str,
+        typer.Argument(
+            help="Workflow file path or registry reference (name[@registry][@version]).",
+        ),
+    ],
+    web_port: Annotated[
+        int,
+        typer.Option(
+            "--web-port",
+            help="Port for the preview dashboard (0 = auto-select).",
+        ),
+    ] = 0,
+) -> None:
+    """Open the web dashboard showing a workflow's DAG without running it.
+
+    Loads and validates the workflow, then shows its agents, routes, and
+    parallel/for-each groups in the same graph view used by 'run --web' —
+    no agents execute and no provider calls are made.
+
+    \b
+    Examples:
+        conductor preview workflow.yaml
+        conductor preview qa-bot@my-registry@1.0.0 --web-port 8090
+    """
+    import asyncio
+
+    from conductor.registry.cache import resolve_and_fetch
+    from conductor.registry.errors import RegistryError
+    from conductor.registry.resolver import resolve_ref
+
+    try:
+        workflow_path = resolve_and_fetch(resolve_ref(workflow))
+    except RegistryError as e:
+        print_error(e)
+        raise typer.Exit(code=1) from None
+
+    from conductor.cli.preview import preview_workflow_async
+
+    try:
+        asyncio.run(
+            preview_workflow_async(
+                workflow_path, web_port=web_port, console=console, verbose=is_verbose()
+            )
+        )
+    except KeyboardInterrupt:
+        if is_verbose():
+            console.print("\n[dim]Preview stopped.[/dim]")
+
+
+@app.command()
 def resume(
     workflow: Annotated[
         str | None,

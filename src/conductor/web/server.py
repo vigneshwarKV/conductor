@@ -505,6 +505,18 @@ class WebDashboard:
         sub_path = data.get("subworkflow_path") if isinstance(data, dict) else None
         return not (isinstance(sub_path, list) and len(sub_path) > 0)
 
+    def _warn_if_seeded_after_start(self, method_name: str, detail: str) -> None:
+        """Warn when a history-seeding method is called after :meth:`start`.
+
+        ``prepend_workflow_started``/``seed_events``/``replay_events_from_jsonl``/
+        ``replay_synthetic_from_context`` all share the same contract — call
+        before :meth:`start` so the seeded/replayed history reaches every
+        client via the first ``GET /api/state``. Centralized so the warning
+        stays consistent instead of four independently hand-maintained copies.
+        """
+        if self._serve_task is not None:
+            logger.warning("%s called after dashboard.start(); %s", method_name, detail)
+
     def prepend_workflow_started(self, data: dict[str, Any]) -> None:
         """Insert a ``workflow_started`` event at the head of ``_event_history``.
 
@@ -519,16 +531,46 @@ class WebDashboard:
         Args:
             data: Event payload (matches ``WorkflowEngine.build_workflow_started_data()``).
         """
-        if self._serve_task is not None:
-            logger.warning(
-                "prepend_workflow_started called after dashboard.start(); "
-                "already-connected clients may see inconsistent history."
-            )
+        self._warn_if_seeded_after_start(
+            "prepend_workflow_started", "already-connected clients may see inconsistent history."
+        )
         import time as _time
 
         self._event_history.insert(
             0, {"type": "workflow_started", "timestamp": _time.time(), "data": data}
         )
+
+    def seed_events(self, events: list[dict[str, Any]]) -> int:
+        """Append pre-built events to ``_event_history``.
+
+        Generic counterpart to :meth:`replay_events_from_jsonl` /
+        :meth:`replay_synthetic_from_context` for callers that already have
+        fully-formed event payloads rather than a log file or a restored
+        context — e.g. ``conductor preview`` synthesizing the
+        ``subworkflow_started`` / ``workflow_started`` pairs for nested
+        sub-workflows (recursively resolved and loaded, but never executed)
+        so the dashboard can be navigated into them without a real run.
+        Call **after** :meth:`prepend_workflow_started` (so the root topology
+        is seeded first) and **before** :meth:`start`, per the same contract
+        as the other seeding methods.
+
+        Args:
+            events: List of ``{"type": ..., "data": ...}`` dicts. A
+                ``timestamp`` is stamped automatically if absent.
+
+        Returns:
+            Number of events appended.
+        """
+        self._warn_if_seeded_after_start(
+            "seed_events", "already-connected clients will not receive the seeded events."
+        )
+        import time as _time
+
+        count = 0
+        for event in events:
+            self._event_history.append({"timestamp": _time.time(), **event})
+            count += 1
+        return count
 
     def replay_events_from_jsonl(self, path: Path) -> int:
         """Seed the dashboard's history from an existing JSONL event log.
@@ -554,11 +596,10 @@ class WebDashboard:
         Returns:
             Number of events appended to ``_event_history``.
         """
-        if self._serve_task is not None:
-            logger.warning(
-                "replay_events_from_jsonl called after dashboard.start(); "
-                "already-connected clients will not receive the replayed events."
-            )
+        self._warn_if_seeded_after_start(
+            "replay_events_from_jsonl",
+            "already-connected clients will not receive the replayed events.",
+        )
         if not path.exists():
             logger.warning("Replay log path does not exist: %s", path)
             return 0
@@ -618,11 +659,10 @@ class WebDashboard:
         Returns:
             Number of events appended to ``_event_history``.
         """
-        if self._serve_task is not None:
-            logger.warning(
-                "replay_synthetic_from_context called after dashboard.start(); "
-                "already-connected clients will not receive the replayed events."
-            )
+        self._warn_if_seeded_after_start(
+            "replay_synthetic_from_context",
+            "already-connected clients will not receive the replayed events.",
+        )
         import time as _time
 
         ts = checkpoint_timestamp if checkpoint_timestamp is not None else _time.time()

@@ -2430,19 +2430,19 @@ class TestSubWorkflowRefValidation:
         """Hitting the recursion depth limit emits a warning, not a silent pass.
 
         Builds a 12-level deep chain (parent → a0 → a1 → ... → a11) and
-        verifies the validator stops at depth ``_MAX_SUBWORKFLOW_VALIDATION_DEPTH``
+        verifies the validator stops at depth ``MAX_SUBWORKFLOW_VALIDATION_DEPTH``
         but emits a warning so the user knows validation was truncated.
         """
         import textwrap
 
         from conductor.config.schema import LimitsConfig, RuntimeConfig
         from conductor.config.validator import (
-            _MAX_SUBWORKFLOW_VALIDATION_DEPTH,
+            MAX_SUBWORKFLOW_VALIDATION_DEPTH,
             validate_workflow_config,
         )
 
         # Build a deep linear chain a0 → a1 → a2 ... → a{N+1}
-        depth = _MAX_SUBWORKFLOW_VALIDATION_DEPTH + 2
+        depth = MAX_SUBWORKFLOW_VALIDATION_DEPTH + 2
         for i in range(depth):
             next_ref = f"./a{i + 1}.yaml" if i + 1 < depth else "$end"
             if next_ref == "$end":

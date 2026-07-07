@@ -68,7 +68,13 @@ MAX_SUBWORKFLOW_DEPTH = 10
 
 
 if TYPE_CHECKING:
-    from conductor.config.schema import AgentDef, ForEachDef, ParallelGroup, WorkflowConfig
+    from conductor.config.schema import (
+        AgentDef,
+        ForEachDef,
+        GateOption,
+        ParallelGroup,
+        WorkflowConfig,
+    )
     from conductor.interrupt.listener import KeyboardListener
     from conductor.providers.base import AgentProvider
     from conductor.providers.registry import ProviderRegistry
@@ -263,6 +269,146 @@ class ExecutionPlan:
 
     possible_paths: list[list[str]] = field(default_factory=list)
     """Possible execution paths through the workflow."""
+
+
+def _serialize_gate_options(options: list[GateOption]) -> list[dict[str, Any]]:
+    """Serialize human_gate options to their wire shape.
+
+    Shared by :func:`_static_agent_config` (static preview) and the live
+    ``gate_presented`` emit in ``_execute_loop`` (runtime), so a field added
+    to ``GateOption`` lands in both the pre-run preview and the live gate at
+    once instead of one being updated and the other missed. Uses
+    ``model_dump()`` rather than hand-listing fields so it stays correct if
+    ``GateOption`` ever gains a field, with no edit needed here.
+    """
+    return [o.model_dump() for o in options]
+
+
+def _static_agent_config(agent: AgentDef) -> dict[str, Any]:
+    """Extract an agent's author-configured (non-runtime) YAML fields.
+
+    Used by :meth:`WorkflowEngine.build_workflow_started_data` so the
+    dashboard can show what a node actually does (prompt, command, wait
+    duration, gate options, etc.) before it ever runs — most usefully in
+    ``conductor preview``, but it also fixes the same near-empty detail
+    panel a pending node shows during a live run. Every value here comes
+    straight from the already-parsed ``AgentDef``; nothing is re-resolved
+    or re-read from disk.
+
+    Security: ``script.env`` values are deliberately excluded — only key
+    names are included. ``config/loader.py`` resolves ``${VAR:-default}``
+    environment placeholders at YAML-parse time, and ``env:`` blocks are
+    exactly where secrets (API keys, tokens) tend to land after that
+    resolution. Every other field here is already shown in the dashboard
+    the moment an agent actually runs (rendered prompt, script command,
+    etc.), so surfacing it earlier isn't a new exposure — but `env` values
+    are never shown even post-run (see ``ScriptDetail.tsx``), so that norm
+    is preserved here too.
+
+    Returns:
+        A dict with only the keys relevant to ``agent.type`` that are
+        actually set — never includes ``None``/empty values.
+    """
+    config: dict[str, Any] = {}
+    agent_type = agent.type or "agent"
+
+    if agent_type == "agent":
+        if agent.prompt:
+            config["prompt"] = agent.prompt
+        if agent.system_prompt:
+            config["system_prompt"] = agent.system_prompt
+        if agent.tools is not None:
+            config["tools"] = agent.tools
+        if agent.timeout_seconds:
+            config["timeout_seconds"] = agent.timeout_seconds
+        if agent.output:
+            config["output"] = {name: field.type for name, field in agent.output.items()}
+        if agent.retry is not None:
+            config["retry"] = {
+                "max_attempts": agent.retry.max_attempts,
+                "backoff": agent.retry.backoff,
+                "delay_seconds": agent.retry.delay_seconds,
+            }
+        if agent.dialog is not None:
+            config["dialog"] = {"trigger_prompt": agent.dialog.trigger_prompt}
+        if agent.validator is not None:
+            config["validator"] = {
+                "criteria": agent.validator.criteria,
+                "max_retries": agent.validator.max_retries,
+            }
+    elif agent_type == "human_gate":
+        if agent.prompt:
+            config["prompt"] = agent.prompt
+        if agent.options:
+            config["options"] = _serialize_gate_options(agent.options)
+    elif agent_type == "script":
+        if agent.command:
+            config["command"] = agent.command
+        if agent.args:
+            config["args"] = agent.args
+        if agent.working_dir:
+            config["working_dir"] = agent.working_dir
+        if agent.timeout:
+            config["timeout"] = agent.timeout
+        if agent.env:
+            config["env_keys"] = list(agent.env.keys())
+    elif agent_type == "wait":
+        if agent.duration is not None:
+            config["duration"] = agent.duration
+        if agent.reason:
+            config["reason"] = agent.reason
+    elif agent_type == "set":
+        if agent.value is not None:
+            config["value"] = agent.value
+        if agent.values is not None:
+            config["values"] = agent.values
+        if agent.output_type:
+            config["output_type"] = agent.output_type
+    elif agent_type == "workflow":
+        if agent.workflow:
+            config["workflow"] = agent.workflow
+        if agent.input_mapping:
+            config["input_mapping"] = agent.input_mapping
+        if agent.max_depth is not None:
+            config["max_depth"] = agent.max_depth
+    elif agent_type == "terminate":
+        if agent.status:
+            config["status"] = agent.status
+        if agent.reason:
+            config["reason"] = agent.reason
+        if agent.output_template:
+            config["output_template"] = agent.output_template
+
+    return config
+
+
+def build_subworkflow_started_payload(
+    *,
+    agent_name: str,
+    workflow_ref: str | None,
+    parent_path: list[str],
+    slot_key: str,
+    iteration: int,
+    item_key: str | None = None,
+) -> dict[str, Any]:
+    """Build the ``subworkflow_started`` event payload.
+
+    Shared by the engine's live emit sites (the sequential and for_each
+    sub-workflow branches in ``_execute_loop``) and ``conductor preview``'s
+    synthetic event builder (``cli/preview.py``), so a field added or
+    renamed here lands in both the live and preview payloads at once
+    instead of one silently drifting out of sync with the other.
+    """
+    payload: dict[str, Any] = {
+        "agent_name": agent_name,
+        "iteration": iteration,
+        "workflow": workflow_ref,
+        "parent_path": list(parent_path),
+        "slot_key": slot_key,
+    }
+    if item_key is not None:
+        payload["item_key"] = item_key
+    return payload
 
 
 class WorkflowEngine:
@@ -657,7 +803,7 @@ class WorkflowEngine:
 
         return system
 
-    def build_workflow_started_data(self) -> dict[str, Any]:
+    def build_workflow_started_data(self, *, preview: bool = False) -> dict[str, Any]:
         """Build the ``workflow_started`` event payload from the current config.
 
         Extracted from :meth:`_execute_loop` so the CLI resume path can
@@ -666,6 +812,15 @@ class WorkflowEngine:
         events. The resumed engine then suppresses its own emit (via
         :attr:`_suppress_workflow_started_emit`) so the dashboard sees
         exactly one root ``workflow_started`` with the current YAML topology.
+
+        Also used by ``conductor preview`` to seed the dashboard with a
+        workflow's topology without ever calling :meth:`run`. Pass
+        ``preview=True`` there so the frontend can render the DAG as
+        static (not "running") — see ``cli/preview.py``.
+
+        Args:
+            preview: When True, marks the payload as a static preview (no
+                agents will execute) via the ``preview`` field.
 
         Returns:
             Dict matching the shape emitted by the engine at the start of
@@ -773,6 +928,11 @@ class WorkflowEngine:
                     "context_tier": (
                         a.context_tier if a.context_tier is not None else default_tier
                     ),
+                    # Static YAML config (prompt, command, duration, options,
+                    # etc.) so the dashboard can show what a node does before
+                    # it ever runs — see `_static_agent_config` docstring for
+                    # exactly what is/isn't included.
+                    "config": _static_agent_config(a),
                 }
                 for a in self.config.agents
             ],
@@ -787,6 +947,11 @@ class WorkflowEngine:
                 {
                     "name": f.name,
                     "source": f.source,
+                    "agent": {
+                        "name": f.agent.name,
+                        "type": f.agent.type or "agent",
+                        "config": _static_agent_config(f.agent),
+                    },
                 }
                 for f in self.config.for_each
             ],
@@ -833,6 +998,7 @@ class WorkflowEngine:
             "system": self._system_metadata,
             "run_id": self._run_id,
             "log_file": self._log_file,
+            "preview": preview,
         }
 
     def suppress_workflow_started_emit(self) -> None:
@@ -3125,15 +3291,7 @@ class WorkflowEngine:
                             agent_context = self.context.get_for_template()
 
                             # Emit gate_presented with full option details for web UI
-                            gate_options_data = [
-                                {
-                                    "label": o.label,
-                                    "value": o.value,
-                                    "route": o.route,
-                                    "prompt_for": o.prompt_for,
-                                }
-                                for o in (agent.options or [])
-                            ]
+                            gate_options_data = _serialize_gate_options(agent.options or [])
 
                             # Render prompt and auto-linkify paths/URLs for markdown display
                             rendered_prompt = self.renderer.render(agent.prompt, agent_context)
@@ -3557,13 +3715,13 @@ class WorkflowEngine:
 
                             self._emit(
                                 "subworkflow_started",
-                                {
-                                    "agent_name": agent.name,
-                                    "iteration": sub_execution_count,
-                                    "workflow": agent.workflow,
-                                    "parent_path": list(self._dashboard_context_path),
-                                    "slot_key": agent.name,
-                                },
+                                build_subworkflow_started_payload(
+                                    agent_name=agent.name,
+                                    workflow_ref=agent.workflow,
+                                    parent_path=self._dashboard_context_path,
+                                    slot_key=agent.name,
+                                    iteration=sub_execution_count,
+                                ),
                             )
 
                             try:
@@ -5117,14 +5275,14 @@ class WorkflowEngine:
                     iteration_slot_key = f"{for_each_group.name}[{key}]"
                     self._emit(
                         "subworkflow_started",
-                        {
-                            "agent_name": for_each_group.name,
-                            "item_key": key,
-                            "iteration": index + 1,
-                            "workflow": for_each_group.agent.workflow,
-                            "parent_path": list(getattr(self, "_dashboard_context_path", [])),
-                            "slot_key": iteration_slot_key,
-                        },
+                        build_subworkflow_started_payload(
+                            agent_name=for_each_group.name,
+                            workflow_ref=for_each_group.agent.workflow,
+                            parent_path=getattr(self, "_dashboard_context_path", []),
+                            slot_key=iteration_slot_key,
+                            iteration=index + 1,
+                            item_key=key,
+                        ),
                     )
                     try:
                         output_content, child_usage = await self._execute_subworkflow_with_inputs(
