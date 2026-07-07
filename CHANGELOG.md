@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased](https://github.com/microsoft/conductor/compare/v0.1.20...HEAD)
 
+### Added
+
+- **`conductor preview`** — open the web dashboard showing a workflow's DAG
+  (agents, routes, parallel/for-each groups) without executing it. The
+  workflow is validated first (same checks as `conductor validate`), then the
+  dashboard is seeded with its topology; no agents run and no provider calls
+  are made. The dashboard renders the graph statically with a
+  "Preview — not running" status instead of a live run. `type: workflow`
+  subworkflow agents can be drilled into recursively too, the same as during
+  a real run (not supported for a `type: workflow` agent inline in a
+  `for_each` group, since its dashboard node only exists once the group's
+  `source` is resolved against real input).
+- Node detail panels in the web dashboard now show each node's static YAML
+  configuration (prompt/system_prompt/tools, script command/args/working_dir,
+  wait duration, human_gate options, set value(s), subworkflow path, terminate
+  status/reason) independent of run state — previously a pending node's panel
+  was nearly empty until it actually ran. Also adds a dedicated detail view
+  for `type: terminate` steps (previously showed nothing type-specific).
+  `script.env` values are never sent to the dashboard, only key names, since
+  `env:` blocks commonly carry resolved secrets.
+
 ## [0.1.20](https://github.com/microsoft/conductor/compare/v0.1.19...v0.1.20) - 2026-06-26
 
 ### Added

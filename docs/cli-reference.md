@@ -8,6 +8,7 @@ Complete command-line reference for Conductor.
 - [`conductor stop`](#conductor-stop)
 - [`conductor gate-respond`](#conductor-gate-respond)
 - [`conductor validate`](#conductor-validate)
+- [`conductor preview`](#conductor-preview)
 - [`conductor registry`](#conductor-registry)
 
 ## `conductor run`
@@ -324,6 +325,35 @@ for f in examples/*.yaml; do conductor validate "$f"; done
 
 **Warnings** (validation passes with notes):
 - **Undeclared dependencies in explicit mode** — agent prompt references `{{ a.output.val }}` but doesn't declare `a.output` in its `input:` list
+
+## `conductor preview`
+
+Open the web dashboard showing a workflow's DAG (agents, routes, parallel/for-each groups) without executing it — no agents run and no provider calls are made. Useful for visually sanity-checking a workflow's structure before spending tokens on a real run.
+
+```bash
+conductor preview <workflow.yaml> [--web-port PORT]
+```
+
+### Examples
+
+```bash
+# Open the dashboard on an auto-selected port
+conductor preview my-workflow.yaml
+
+# Pin a specific port
+conductor preview my-workflow.yaml --web-port 8090
+
+# Also accepts registry references, like `run`/`validate`/`show`
+conductor preview qa-bot@my-registry@1.0.0
+```
+
+The workflow is validated first (same checks as `conductor validate`), so a broken workflow fails fast before the dashboard starts. The dashboard status bar reads "Preview — not running" and all nodes render statically; press Ctrl+C to exit.
+
+### Subworkflows
+
+`type: workflow` agents can be drilled into from the dashboard just like during a real run — double-click the node to see the nested workflow's own DAG, recursively. This works for any depth of nesting reachable through top-level agents.
+
+**Not supported**: a `type: workflow` agent used as the inline agent of a `for_each` group. Its dashboard node only exists once the group's `source` is resolved against real runtime input (one node per fan-out item), which preview has no input to resolve — that node shows "Subworkflow has not started yet" until you actually run the workflow.
 
 ## `conductor registry`
 

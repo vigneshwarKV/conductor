@@ -58,6 +58,9 @@ uv run conductor checkpoints           # list available checkpoints
 # Validate a workflow
 uv run conductor validate examples/simple-qa.yaml
 make validate-examples    # validate all examples
+
+# Preview a workflow's DAG in the web dashboard without running it
+uv run conductor preview examples/simple-qa.yaml
 ```
 
 ## Releasing
@@ -79,9 +82,10 @@ step-by-step checklist.
 
 ### Core Package Structure (`src/conductor/`)
 
-- **cli/**: Typer-based CLI with commands `run`, `validate`, `init`, `templates`, `stop`, `update`, `resume`, `checkpoints`
+- **cli/**: Typer-based CLI with commands `run`, `validate`, `preview`, `init`, `templates`, `stop`, `update`, `resume`, `checkpoints`
   - `app.py` - Main entry point, defines the Typer application
   - `run.py` - Workflow execution command with verbose logging helpers
+  - `preview.py` - Loads and validates a workflow (same checks as `validate`), then seeds the web dashboard with its topology via `WorkflowEngine.build_workflow_started_data(preview=True)` and never calls `.run()` — no agents execute, no provider is constructed. The `preview` flag rides in the `workflow_started` payload so the frontend renders the DAG statically (`workflowStatus: 'pending'`, `$start` node not spinning) instead of looking like a live run; see `docs/cli-reference.md` (Preview section). Also recursively expands top-level `type: workflow` agents: `_iter_subworkflow_agents` + `_build_subworkflow_preview_events` resolve each nested `workflow:` reference the same way `conductor validate`'s `_resolve_subworkflow_ref_for_validation` does (cycle/depth-guarded), load the child config, and synthesize the same `subworkflow_started` + child `workflow_started` event pair the engine would emit lazily on a real run — seeded via `WebDashboard.seed_events()` (appends, unlike `prepend_workflow_started`'s insert-at-head) so the dashboard's existing drill-down navigation (`subworkflowContexts`) works without ever executing. **Not** expanded: `for_each` inline `type: workflow` agents — their dashboard node is keyed by the runtime fan-out item (`f"{group.name}[{key}]"`), which doesn't exist until `for_each.source` is resolved against real input, so there's no static node to attach a preview context to.
   - `bg_runner.py` - Background process forking for `--web-bg` mode. Captures the detached child's stdout/stderr to `$TMPDIR/conductor/conductor-<name>-<ts>-<runid>.bg.{stderr,stdout}.log` so silent crashes (uncaught Python exceptions, `faulthandler` dumps) leave a forensic trail — DEVNULL is **not** used for stdout/stderr. Passes `CONDUCTOR_RUN_ID`, `CONDUCTOR_BG_STDERR_LOG`, and `CONDUCTOR_BG_STDOUT_LOG` to the child via env so the child's `EventLogSubscriber` shares a run id with the bg log files and surfaces both paths in `workflow_started` system metadata. Returns a `BackgroundLaunch` dataclass (`url`, `stderr_log`, `stdout_log`, `run_id`).
   - `pid.py` - PID file utilities for tracking/stopping background processes
   - `update.py` - Update check and version comparison. Upgrades are delegated to the install script (`install.ps1`/`install.sh`); in-process self-upgrade was removed because on Windows the running Python interpreter sits inside the venv `uv tool install --force` is trying to recreate, which fails with "Access is denied". `conductor update` prints the OS-appropriate install-script one-liner; `conductor update --apply` spawns the installer detached (Windows: new console window; POSIX: `os.execvpe` replace) and exits the current process so file locks release. The startup hint is suppressed by `CONDUCTOR_NO_UPDATE_CHECK=1`, `--silent`, `--help`/`--version`, and the `update` subcommand itself.
@@ -92,7 +96,7 @@ step-by-step checklist.
   - `validator.py` - Cross-reference validation (agent names, routes, parallel groups)
 
 - **engine/**: Workflow execution orchestration
-  - `workflow.py` - Main `WorkflowEngine` class that orchestrates agent execution, parallel groups, for-each groups, and routing
+  - `workflow.py` - Main `WorkflowEngine` class that orchestrates agent execution, parallel groups, for-each groups, and routing. Module-level `_static_agent_config(agent)` extracts each agent's author-configured (non-runtime) YAML fields — prompt/system_prompt/tools for `agent`, command/args/working_dir for `script`, duration/reason for `wait`, options for `human_gate`, value(s) for `set`, workflow/input_mapping for `workflow`, status/reason/output_template for `terminate` — attached as `"config"` on each entry in `build_workflow_started_data()`'s `agents` list (and on `for_each_groups[].agent`) so the dashboard can show what a node does before it ever runs (fixes the near-empty detail panel on pending nodes, most visible in `conductor preview` but not preview-specific). Deliberately excludes `script.env` *values* — only `env_keys` (names) — since `config/loader.py` resolves `${VAR:-default}` placeholders at parse time and `env:` blocks are exactly where secrets tend to land; every other field here is already shown in the dashboard the moment an agent actually runs, so surfacing it earlier isn't a new exposure class. Frontend: `StaticConfigSection.tsx` renders this generically (keyed by field presence, not by switching on node type) and is composed into `AgentDetail`/`ScriptDetail`/`SetDetail`/`WaitDetail`/`GateDetail`/`SubworkflowDetail`; a new `TerminateDetail.tsx` (wired into `DetailPanel.tsx`'s switch) fixes a pre-existing, preview-independent gap where `type: terminate` nodes silently fell through to `AgentDetail` and showed nothing terminate-shaped.
   - `context.py` - `WorkflowContext` manages accumulated agent outputs with three modes: accumulate, last_only, explicit
   - `router.py` - Route evaluation with Jinja2 templates and simpleeval expressions
   - `limits.py` - Safety enforcement (max iterations, timeout)
