@@ -1,5 +1,6 @@
 import { MetadataGrid } from './MetadataGrid';
 import { OutputViewer } from './OutputViewer';
+import { StaticConfigSection } from './StaticConfigSection';
 import type { NodeData } from '@/stores/workflow-store';
 import { NODE_STATUS_HEX } from '@/lib/constants';
 import { formatElapsed } from '@/lib/utils';
@@ -56,6 +57,8 @@ export function SetDetail({ node }: SetDetailProps) {
         </span>
         <span className="text-xs text-[var(--text-muted)]">Set</span>
       </div>
+
+      <StaticConfigSection config={node.config} />
 
       <MetadataGrid items={items} />
 

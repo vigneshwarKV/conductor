@@ -1,5 +1,6 @@
 import { Layers, ChevronRight, Coins, Hash } from 'lucide-react';
 import { MetadataGrid } from './MetadataGrid';
+import { StaticConfigSection } from './StaticConfigSection';
 import { useWorkflowStore } from '@/stores/workflow-store';
 import { useViewedSubworkflowContexts } from '@/hooks/use-viewed-context';
 import type { NodeData, SubworkflowContext } from '@/stores/workflow-store';
@@ -37,6 +38,8 @@ export function SubworkflowDetail({ node }: SubworkflowDetailProps) {
       </div>
 
       <MetadataGrid items={items} />
+
+      <StaticConfigSection config={node.config} />
 
       {/* List subworkflow runs */}
       {subContexts.length > 0 && (

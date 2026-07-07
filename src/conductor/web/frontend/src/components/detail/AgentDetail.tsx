@@ -4,6 +4,7 @@ import { MetadataGrid, buildAgentMetadata } from './MetadataGrid';
 import { OutputViewer } from './OutputViewer';
 import { ActivityStream } from './ActivityStream';
 import { ValidatorDetail } from './ValidatorDetail';
+import { StaticConfigSection } from './StaticConfigSection';
 import type { NodeData, IterationSnapshot } from '@/stores/workflow-store';
 
 import { NODE_STATUS_HEX } from '@/lib/constants';
@@ -33,6 +34,9 @@ export function AgentDetail({ node }: AgentDetailProps) {
         </span>
         <span className="text-xs text-[var(--text-muted)]">Agent</span>
       </div>
+
+      {/* Static YAML config — always shown, independent of run state */}
+      <StaticConfigSection config={node.config} />
 
       {/* Validation status (issue #220) */}
       <ValidatorDetail node={node} />

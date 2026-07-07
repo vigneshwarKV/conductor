@@ -6,6 +6,7 @@ import { YamlViewer } from '@/components/layout/YamlViewer';
 export function Header() {
   const workflowName = useWorkflowStore((s) => s.workflowName);
   const workflowStatus = useWorkflowStore((s) => s.workflowStatus);
+  const isPreview = useWorkflowStore((s) => s.isPreview);
   const isPaused = useWorkflowStore((s) => s.isPaused);
   const workflowYaml = useWorkflowStore((s) => s.workflowYaml);
   const conductorVersion = useWorkflowStore((s) => s.conductorVersion);
@@ -14,7 +15,9 @@ export function Header() {
   const [killing, setKilling] = useState(false);
   const [showYaml, setShowYaml] = useState(false);
 
-  const isRunning = workflowStatus === 'running' || workflowStatus === 'pending';
+  // Preview mode never executes, so Stop/Resume/Kill never apply even
+  // though workflowStatus sits at 'pending' the whole time.
+  const isRunning = !isPreview && (workflowStatus === 'running' || workflowStatus === 'pending');
 
   // Reset button states when transitioning out of paused
   useEffect(() => {

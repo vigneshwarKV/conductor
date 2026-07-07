@@ -10,6 +10,7 @@ import { GroupDetail } from './GroupDetail';
 import { DialogEngagementPrompt } from './DialogEngagementPrompt';
 import { SubworkflowDetail } from './SubworkflowDetail';
 import { WaitDetail } from './WaitDetail';
+import { TerminateDetail } from './TerminateDetail';
 import { cn } from '@/lib/utils';
 
 export function DetailPanel() {
@@ -60,6 +61,8 @@ export function DetailPanel() {
         return GroupDetail;
       case 'workflow':
         return SubworkflowDetail;
+      case 'terminate':
+        return TerminateDetail;
       default:
         return AgentDetail;
     }

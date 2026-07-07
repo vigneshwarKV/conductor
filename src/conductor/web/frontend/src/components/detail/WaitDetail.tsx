@@ -1,4 +1,5 @@
 import { MetadataGrid } from './MetadataGrid';
+import { StaticConfigSection } from './StaticConfigSection';
 import type { NodeData } from '@/stores/workflow-store';
 import { NODE_STATUS_HEX } from '@/lib/constants';
 import { formatElapsed } from '@/lib/utils';
@@ -39,6 +40,8 @@ export function WaitDetail({ node }: WaitDetailProps) {
         </span>
         <span className="text-xs text-[var(--text-muted)]">Wait</span>
       </div>
+
+      <StaticConfigSection config={node.config} />
 
       <MetadataGrid items={items} />
     </div>

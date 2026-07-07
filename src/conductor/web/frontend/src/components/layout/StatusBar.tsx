@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils';
 
 export function StatusBar() {
   const workflowStatus = useWorkflowStore((s) => s.workflowStatus);
+  const isPreview = useWorkflowStore((s) => s.isPreview);
   const agentsCompleted = useWorkflowStore((s) => s.agentsCompleted);
   const agentsTotal = useWorkflowStore((s) => s.agentsTotal);
   const totalCost = useWorkflowStore((s) => s.totalCost);
@@ -41,7 +42,7 @@ export function StatusBar() {
     }
     switch (workflowStatus) {
       case 'pending':
-        return 'Waiting for workflow\u2026';
+        return isPreview ? 'Preview \u2014 not running' : 'Waiting for workflow\u2026';
       case 'running':
         return 'Running';
       case 'completed':

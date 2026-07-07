@@ -88,6 +88,7 @@ export function WorkflowGraph() {
   const selectNode = useWorkflowStore((s) => s.selectNode);
   const selectedNode = useWorkflowStore((s) => s.selectedNode);
   const workflowStatus = useWorkflowStore((s) => s.workflowStatus);
+  const isPreview = useWorkflowStore((s) => s.isPreview);
   const wsStatus = useWorkflowStore((s) => s.wsStatus);
   const workflowFailedAgent = useWorkflowStore((s) => s.workflowFailedAgent);
   const navigateIntoSubworkflow = useWorkflowStore((s) => s.navigateIntoSubworkflow);
@@ -224,7 +225,10 @@ export function WorkflowGraph() {
     }
   }, [workflowStatus, workflowFailedAgent, selectNode]);
 
-  const showEmptyState = workflowStatus === 'pending' && agents.length === 0;
+  // `agents.length === 0` can't actually happen for a validated preview
+  // (entry_point requires at least one agent), but guard on `!isPreview`
+  // explicitly rather than relying on that being true forever.
+  const showEmptyState = !isPreview && workflowStatus === 'pending' && agents.length === 0;
 
   // Better empty state message based on ws status
   const emptyMessage = (() => {

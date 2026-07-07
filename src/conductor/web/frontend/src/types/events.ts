@@ -72,6 +72,39 @@ export interface ProviderMetadata {
   maintainer?: string | null;
 }
 
+/**
+ * Author-configured (non-runtime) fields for a single agent, keyed by the
+ * agent's `type`. Shape varies by type — see
+ * `WorkflowEngine._static_agent_config` (Python) for the source of truth.
+ * `env_keys` deliberately holds only `script.env` key names, never values.
+ */
+export interface StaticAgentConfig {
+  prompt?: string;
+  system_prompt?: string;
+  tools?: string[];
+  timeout_seconds?: number;
+  output?: Record<string, string>;
+  retry?: { max_attempts: number; backoff: string; delay_seconds: number };
+  dialog?: { trigger_prompt: string };
+  validator?: { criteria: string; max_retries: number };
+  options?: Array<{ label: string; value: string; route: string; prompt_for?: string | null }>;
+  command?: string;
+  args?: string[];
+  working_dir?: string;
+  timeout?: number;
+  env_keys?: string[];
+  duration?: string | number;
+  reason?: string;
+  value?: unknown;
+  values?: Record<string, unknown>;
+  output_type?: string;
+  workflow?: string;
+  input_mapping?: Record<string, string>;
+  max_depth?: number;
+  status?: string;
+  output_template?: Record<string, string>;
+}
+
 export interface WorkflowStartedData {
   name: string;
   entry_point?: string;
@@ -82,12 +115,21 @@ export interface WorkflowStartedData {
     /** Provider this agent will use at runtime (honors per-agent override). */
     provider_name?: string;
     reasoning_effort?: string | null;
+    /** Static YAML config, e.g. prompt/command/duration — never runtime data. */
+    config?: StaticAgentConfig;
   }>;
   routes: Array<{ from: string; to: string; when?: string }>;
   parallel_groups?: Array<{ name: string; agents: string[] }>;
-  for_each_groups?: Array<{ name: string }>;
+  for_each_groups?: Array<{
+    name: string;
+    /** The inline per-item agent's static shape, e.g. for showing what a
+     *  for_each group's per-iteration subworkflow/agent does. */
+    agent?: { name: string; type?: string; config?: StaticAgentConfig };
+  }>;
   /** Per-provider tier/capability metadata keyed by provider name (#241). */
   providers?: Record<string, ProviderMetadata>;
+  /** True when seeded by `conductor preview` — no agents will execute. */
+  preview?: boolean;
 }
 
 export interface WorkflowCompletedData {

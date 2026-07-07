@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import { Check, Loader2, Send, FileText } from 'lucide-react';
 import { MetadataGrid } from './MetadataGrid';
 import { FileViewer } from './FileViewer';
+import { StaticConfigSection } from './StaticConfigSection';
 import type { NodeData } from '@/stores/workflow-store';
 import { useWorkflowStore } from '@/stores/workflow-store';
 
@@ -314,6 +315,10 @@ export function GateDetail({ node }: GateDetailProps) {
               <PromptMarkdown text={node.prompt} muted={true} onFileClick={setViewingFile} />
             </div>
           )}
+
+          {/* Before the gate is ever reached there's no runtime prompt/options
+              yet — fall back to the static YAML config for both. */}
+          {!node.prompt && <StaticConfigSection config={node.config} />}
         </>
       )}
 

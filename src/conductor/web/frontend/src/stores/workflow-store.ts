@@ -46,6 +46,8 @@ import type {
   IterationLimitReachedData,
   IterationLimitResolvedData,
   IterationLimitResponseTarget,
+  StaticAgentConfig,
+  ProviderMetadata,
 } from '@/types/events';
 
 export interface ActivityEntry {
@@ -93,6 +95,9 @@ export interface NodeData {
   elapsed?: number;
   model?: string;
   reasoning_effort?: string;
+  /** Static YAML config (prompt/command/duration/options/...), known before
+   *  any run. Never overwritten by runtime events — see `StaticAgentConfig`. */
+  config?: StaticAgentConfig;
   // Context window tracking
   context_pct?: number;
   context_window_used?: number;
@@ -184,6 +189,8 @@ export interface WorkflowAgent {
   /** Provider this agent will use at runtime. Drives the experimental
    *  badge in the graph (#241). */
   provider_name?: string;
+  /** Static YAML config, e.g. prompt/command/duration — never runtime data. */
+  config?: StaticAgentConfig;
 }
 
 // ProviderMetadata is defined in types/events.ts (single source of truth)
@@ -197,6 +204,8 @@ export interface ParallelGroup {
 
 export interface ForEachGroup {
   name: string;
+  /** The inline per-item agent's static shape (never runtime data). */
+  agent?: { name: string; type?: string; config?: StaticAgentConfig };
 }
 
 export type WorkflowStatus = 'pending' | 'running' | 'completed' | 'failed';
@@ -280,6 +289,8 @@ interface WorkflowState {
   // Workflow metadata
   workflowName: string;
   workflowStatus: WorkflowStatus;
+  /** True when seeded by `conductor preview` — the graph is static, no run is in progress. */
+  isPreview: boolean;
   workflowStartTime: number | null;
   workflowFailure: { error_type?: string; message?: string; elapsed_seconds?: number; timeout_seconds?: number; current_agent?: string; checkpoint_path?: string; checkpoint_unavailable_reason?: string; stopped_by_user?: boolean; termination_reason?: string; terminated_by?: string; is_explicit?: boolean; status?: string } | null;
   workflowFailedAgent: string | null;
@@ -428,6 +439,44 @@ function addActivity(nodes: Record<string, NodeData>, agentName: string, entry: 
   nd.activity.push(entry);
 }
 
+/**
+ * Decorate every agent's node with model/reasoning_effort/config/provider
+ * info from the `workflow_started` payload — including parallel-group
+ * members, whose nodes were already created by the parallel-groups loop
+ * (since `ensureNode` is idempotent and that loop never sets this info
+ * itself). Shared by the root and child-context branches of the
+ * `workflow_started` handler so a fix here only needs to be made once.
+ */
+function decorateAgentNodes(
+  nodes: Record<string, NodeData>,
+  agents: WorkflowAgent[],
+  groupAgents: Set<string>,
+  agentNames: Set<string>,
+  providers: Record<string, ProviderMetadata> | undefined,
+): void {
+  for (const a of agents) {
+    const nodeType = (a.type || 'agent') as NodeType;
+    const nd = ensureNode(nodes, a.name, nodeType);
+    if (a.model) nd.model = a.model;
+    if (a.reasoning_effort) nd.reasoning_effort = a.reasoning_effort;
+    if (a.config) nd.config = a.config;
+    // Decorate the node with provider tier so the graph can render
+    // the experimental badge without crawling the providers block.
+    if (a.provider_name) {
+      nd.provider_name = a.provider_name;
+      const providerMeta = providers?.[a.provider_name];
+      if (providerMeta?.tier) {
+        nd.provider_tier = providerMeta.tier;
+      }
+    }
+    // agentsTotal counts each group as one unit, not its members —
+    // preserve that by only adding standalone (non-group-member) agents.
+    if (!agentNames.has(a.name) && !groupAgents.has(a.name)) {
+      agentNames.add(a.name);
+    }
+  }
+}
+
 /** Create a new reference for a node to ensure React/ReactFlow detects the change. */
 function replaceNode(nodes: Record<string, NodeData>, name: string): void {
   if (nodes[name]) {
@@ -553,6 +602,7 @@ void _getActiveChildState; // suppress unused warning
 export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   workflowName: '',
   workflowStatus: 'pending',
+  isPreview: false,
   workflowStartTime: null,
   workflowFailure: null,
   workflowFailedAgent: null,
@@ -784,6 +834,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
         workflowFailedAgent: null,
         workflowTermination: null,
         workflowStatus: 'pending',
+        isPreview: false,
         workflowStartTime: null,
         workflowName: '',
         workflowFailure: null,
@@ -999,7 +1050,9 @@ const eventHandlers: Record<string, (state: MutableState, data: Record<string, u
 
     if (state.wfDepth === 0) {
       // Root workflow — initialize as before
-      state.workflowStatus = 'running';
+      const isPreview = Boolean(data.preview);
+      state.isPreview = isPreview;
+      state.workflowStatus = isPreview ? 'pending' : 'running';
       state.workflowStartTime = timestamp ?? Date.now() / 1000;
       state.workflowName = data.name || '';
       state.workflowYaml = (_data as Record<string, unknown>).yaml_source as string ?? null;
@@ -1011,7 +1064,8 @@ const eventHandlers: Record<string, (state: MutableState, data: Record<string, u
       state.forEachGroups = data.for_each_groups || [];
 
       ensureNode(state.nodes, '$start', 'start');
-      state.nodes['$start']!.status = 'running';
+      // Preview mode never runs, so $start stays 'pending' (its ensureNode default).
+      if (!isPreview) state.nodes['$start']!.status = 'running';
       replaceNode(state.nodes, '$start');
 
       const groupAgents = new Set<string>();
@@ -1028,25 +1082,11 @@ const eventHandlers: Record<string, (state: MutableState, data: Record<string, u
         agentNames.add(fg.name);
         ensureNode(state.nodes, fg.name, 'for_each_group');
         state.groupProgress[fg.name] = { total: 0, completed: 0, failed: 0 };
+        // Inline per-item agent's static config — no dedicated group detail
+        // UI reads this yet, but it's attached now so the data is there.
+        if (fg.agent?.config) state.nodes[fg.name]!.config = fg.agent.config;
       }
-      for (const a of state.agents) {
-        if (!agentNames.has(a.name) && !groupAgents.has(a.name)) {
-          const nodeType = (a.type || 'agent') as NodeType;
-          ensureNode(state.nodes, a.name, nodeType);
-          if (a.model) state.nodes[a.name]!.model = a.model;
-          if (a.reasoning_effort) state.nodes[a.name]!.reasoning_effort = a.reasoning_effort;
-          // Decorate the node with provider tier so the graph can render
-          // the experimental badge without crawling the providers block.
-          if (a.provider_name) {
-            state.nodes[a.name]!.provider_name = a.provider_name;
-            const providerMeta = data.providers?.[a.provider_name];
-            if (providerMeta?.tier) {
-              state.nodes[a.name]!.provider_tier = providerMeta.tier;
-            }
-          }
-          agentNames.add(a.name);
-        }
-      }
+      decorateAgentNodes(state.nodes, state.agents, groupAgents, agentNames, data.providers);
       state.agentsTotal = agentNames.size;
     } else {
       // Child workflow — populate the owning child context. Locate it via
@@ -1060,8 +1100,9 @@ const eventHandlers: Record<string, (state: MutableState, data: Record<string, u
         ? resolveSlotPath(state.subworkflowContexts, subPath as string[])?.ctx ?? null
         : resolveContext(state.subworkflowContexts, state.activeContextPath);
       if (ctx) {
+        const isChildPreview = Boolean(data.preview);
         ctx.workflowName = data.name || '';
-        ctx.status = 'running';
+        ctx.status = isChildPreview ? 'pending' : 'running';
         ctx.entryPoint = data.entry_point || null;
         ctx.agents = data.agents || [];
         ctx.routes = data.routes || [];
@@ -1069,7 +1110,8 @@ const eventHandlers: Record<string, (state: MutableState, data: Record<string, u
         ctx.forEachGroups = data.for_each_groups || [];
 
         ensureNode(ctx.nodes, '$start', 'start');
-        ctx.nodes['$start']!.status = 'running';
+        // Preview mode never runs, so $start stays 'pending' (its ensureNode default).
+        if (!isChildPreview) ctx.nodes['$start']!.status = 'running';
 
         const groupAgents = new Set<string>();
         const agentNames = new Set<string>();
@@ -1085,23 +1127,9 @@ const eventHandlers: Record<string, (state: MutableState, data: Record<string, u
           agentNames.add(fg.name);
           ensureNode(ctx.nodes, fg.name, 'for_each_group');
           ctx.groupProgress[fg.name] = { total: 0, completed: 0, failed: 0 };
+          if (fg.agent?.config) ctx.nodes[fg.name]!.config = fg.agent.config;
         }
-        for (const a of ctx.agents) {
-          if (!agentNames.has(a.name) && !groupAgents.has(a.name)) {
-            const nodeType = (a.type || 'agent') as NodeType;
-            ensureNode(ctx.nodes, a.name, nodeType);
-            if (a.model) ctx.nodes[a.name]!.model = a.model;
-            if (a.reasoning_effort) ctx.nodes[a.name]!.reasoning_effort = a.reasoning_effort;
-            if (a.provider_name) {
-              ctx.nodes[a.name]!.provider_name = a.provider_name;
-              const providerMeta = data.providers?.[a.provider_name];
-              if (providerMeta?.tier) {
-                ctx.nodes[a.name]!.provider_tier = providerMeta.tier;
-              }
-            }
-            agentNames.add(a.name);
-          }
-        }
+        decorateAgentNodes(ctx.nodes, ctx.agents, groupAgents, agentNames, data.providers);
         ctx.agentsTotal = agentNames.size;
       }
     }
@@ -1737,20 +1765,23 @@ const eventHandlers: Record<string, (state: MutableState, data: Record<string, u
     }
 
     // Mark the parent-side agent node as running so the graph reflects that
-    // a sub-workflow is in flight.
-    if (parentIndexPath.length === 0) {
-      const nd = state.nodes[data.agent_name];
-      if (nd) {
-        nd.status = 'running';
-        replaceNode(state.nodes, data.agent_name);
-      }
-    } else {
-      const parentCtx = resolveContext(state.subworkflowContexts, parentIndexPath);
-      if (parentCtx) {
-        const nd = parentCtx.nodes[data.agent_name];
+    // a sub-workflow is in flight. Skipped in preview mode — the synthetic
+    // events describe topology only, nothing is actually in flight.
+    if (!state.isPreview) {
+      if (parentIndexPath.length === 0) {
+        const nd = state.nodes[data.agent_name];
         if (nd) {
           nd.status = 'running';
-          replaceNode(parentCtx.nodes, data.agent_name);
+          replaceNode(state.nodes, data.agent_name);
+        }
+      } else {
+        const parentCtx = resolveContext(state.subworkflowContexts, parentIndexPath);
+        if (parentCtx) {
+          const nd = parentCtx.nodes[data.agent_name];
+          if (nd) {
+            nd.status = 'running';
+            replaceNode(parentCtx.nodes, data.agent_name);
+          }
         }
       }
     }
